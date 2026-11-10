@@ -1,167 +1,120 @@
+
 import pandas as pd
-import matplotlib.pyplot as plt
+import joblib
 
-from sklearn.pipeline import Pipeline
+from pathlib import Path
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
+from src.ft_engineering import prepare_data
 
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    classification_report,
-    confusion_matrix
-)
 
-from src.ft_engineering import prepare_train_test
+# Rutas del proyecto
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODEL_DIR = BASE_DIR / "models"
 
-df = pd.read_csv("C:\M52.0\mlops_pipeline\Base_de_datos1.cs") 
-print(df.shape) 
-df.head()
+# Modelo seleccionado inicialmente
+MODEL_PATH = MODEL_DIR / "logistic_regression.joblib"
 
-X_train, X_test, y_train, y_test, preprocessor = prepare_train_test(
-    df,
-    target="Pago_atiempo"
-)
 
-print("X_train:", X_train.shape)
-print("X_test:", X_test.shape)
-print("y_train:", y_train.shape)
-print("y_test:", y_test.shape)
+def load_model(model_path=MODEL_PATH):
+    """
+    Carga el modelo previamente entrenado.
+    """
 
-def build_model(model):
-    return Pipeline([
-        ("preprocessor", preprocessor),
-        ("model", model)
-    ])
+    model_path = Path(model_path)
 
-models = {
-    "Logistic Regression": LogisticRegression(
-        max_iter=1000,
-        random_state=42
-    ),
-
-    "Decision Tree": DecisionTreeClassifier(
-        random_state=42,
-        max_depth=8
-    ),
-
-    "Random Forest": RandomForestClassifier(
-        n_estimators=200,
-        random_state=42,
-        n_jobs=-1
-    )
-}
-
-def summarize_classification(y_true, y_pred, model_name):
-    return {
-        "Modelo": model_name,
-        "Accuracy": accuracy_score(y_true, y_pred),
-        "Precision": precision_score(
-            y_true,
-            y_pred,
-            average="weighted",
-            zero_division=0
-        ),
-        "Recall": recall_score(
-            y_true,
-            y_pred,
-            average="weighted",
-            zero_division=0
-        ),
-        "F1": f1_score(
-            y_true,
-            y_pred,
-            average="weighted",
-            zero_division=0
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"No se encontró el modelo: {model_path}. "
+            "Ejecuta primero el entrenamiento."
         )
-    }
 
-results = []
-trained_models = {}
+    model = joblib.load(model_path)
 
-for name, model in models.items():
+    print(f"Modelo cargado correctamente: {model_path.name}")
 
-    pipeline = build_model(model)
+    return model
 
-    pipeline.fit(X_train, y_train)
 
-    y_pred = pipeline.predict(X_test)
+def prepare_new_data(df):
+    """
+    Prepara nuevos registros utilizando las mismas
+    transformaciones iniciales del entrenamiento.
+    """
 
-    result = summarize_classification(
-        y_test,
-        y_pred,
-        name
+    df = prepare_data(df)
+
+    # Eliminar target si está presente
+    if "Pago_atiempo" in df.columns:
+        df = df.drop(columns=["Pago_atiempo"])
+
+    # Excluir variable descartada por posible fuga de información
+    if "puntaje" in df.columns:
+        df = df.drop(columns=["puntaje"])
+
+    return df
+
+
+def predict_new_data(df, model=None):
+    """
+    Realiza predicciones sobre nuevos préstamos.
+    """
+
+    if model is None:
+        model = load_model()
+
+    X_new = prepare_new_data(df)
+
+    predictions = model.predict(X_new)
+
+    class_zero_index = list(model.classes_).index(0)
+
+    probabilities = model.predict_proba(X_new)[
+        :, class_zero_index
+    ]
+
+    results = pd.DataFrame({
+        "Prediccion_Pago_atiempo": predictions,
+        "Probabilidad_incumplimiento": probabilities
+    }, index=df.index)
+
+    results["Clasificacion"] = results[
+        "Prediccion_Pago_atiempo"
+    ].map({
+        0: "Posible incumplimiento",
+        1: "Posible cumplimiento"
+    })
+
+    return results
+
+
+def deploy_model(data_path=None):
+    """
+    Ejecuta el proceso de despliegue y predicción.
+    """
+
+    if data_path is None:
+        data_path = BASE_DIR / "Base_de_datos1.csv"
+
+    df = pd.read_csv(data_path)
+
+    model = load_model()
+
+    predictions = predict_new_data(
+        df,
+        model=model
     )
 
-    results.append(result)
+    print("\nRESULTADOS DE PREDICCIÓN")
+    print(predictions.head(10).to_string(index=False))
 
-    trained_models[name] = pipeline
-
-    print("=" * 60)
-    print(name)
-    print("=" * 60)
-    print(classification_report(
-        y_test,
-        y_pred,
-        zero_division=0
-    ))
-
-results_df = pd.DataFrame(results)
-
-results_df
-
-metrics = [
-    "Accuracy",
-    "Precision",
-    "Recall",
-    "F1"
-]
-
-results_plot = results_df.set_index("Modelo")[metrics]
-
-results_plot.plot(
-    kind="bar",
-    figsize=(10, 6)
-)
-
-plt.title("Comparación de modelos de clasificación")
-plt.ylabel("Valor")
-plt.xlabel("Modelo")
-plt.xticks(rotation=0)
-plt.ylim(0, 1)
-plt.legend(title="Métrica")
-plt.tight_layout()
-plt.show()
-
-for name, pipeline in trained_models.items():
-
-    y_pred = pipeline.predict(X_test)
-
-    cm = confusion_matrix(y_test, y_pred)
-
-    print(f"\n{name}")
-    print(cm)
-
-from sklearn.metrics import ConfusionMatrixDisplay
-
-for name, pipeline in trained_models.items():
-
-    y_pred = pipeline.predict(X_test)
-
-    ConfusionMatrixDisplay.from_predictions(
-        y_test,
-        y_pred
+    print("\nRESUMEN DE PREDICCIONES")
+    print(
+        predictions["Clasificacion"].value_counts()
     )
 
-    plt.title(f"Matriz de confusión - {name}")
-    plt.tight_layout()
-    plt.show()
+    return predictions
 
-results_df.to_csv(
-    "resultados_modelos.csv",
-    index=False
-)
+
+if __name__ == "__main__":
+
+    deploy_model()

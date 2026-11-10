@@ -1,43 +1,48 @@
+
 import pandas as pd
+import numpy as np
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.preprocessing import (
+    OneHotEncoder,
+    OrdinalEncoder,
+    StandardScaler
+)
 from sklearn.model_selection import train_test_split
 
 
 def prepare_data(df):
-    """
-    Limpieza y preparación inicial de los datos.
-    """
+
 
     df = df.copy()
 
-    # ---------------------------------------------------
-    # 1. Convertir fecha
-    # ---------------------------------------------------
+    # Convertir fecha y crear variables temporales
     if "fecha_prestamo" in df.columns:
 
         df["fecha_prestamo"] = pd.to_datetime(
             df["fecha_prestamo"],
+            format="mixed",
+            dayfirst=False,
             errors="coerce"
         )
 
         df["anio_prestamo"] = df["fecha_prestamo"].dt.year
         df["mes_prestamo"] = df["fecha_prestamo"].dt.month
-        df["dia_semana_prestamo"] = df["fecha_prestamo"].dt.dayofweek
+        df["dia_semana_prestamo"] = (
+            df["fecha_prestamo"].dt.day_of_week
+        )
 
         df.drop(columns=["fecha_prestamo"], inplace=True)
 
-    # ---------------------------------------------------
-    # 2. Convertir puntaje a numérico
-    # ---------------------------------------------------
+    # Convertir puntaje a numérico
     if "puntaje" in df.columns:
 
         df["puntaje"] = (
             df["puntaje"]
-            .astype(str)
+            .astype("string")
+            .str.strip()
             .str.replace(",", ".", regex=False)
         )
 
@@ -46,9 +51,7 @@ def prepare_data(df):
             errors="coerce"
         )
 
-    # ---------------------------------------------------
-    # 3. Limpiar tendencia_ingresos
-    # ---------------------------------------------------
+    # Limpiar tendencia_ingresos
     if "tendencia_ingresos" in df.columns:
 
         valores_validos = [
@@ -57,12 +60,35 @@ def prepare_data(df):
             "Decreciente"
         ]
 
-        df["tendencia_ingresos"] = df[
-            "tendencia_ingresos"
-        ].where(
-            df["tendencia_ingresos"].isin(valores_validos),
-            pd.NA
+        df["tendencia_ingresos"] = (
+            df["tendencia_ingresos"]
+            .astype("string")
+            .str.strip()
         )
+
+        df["tendencia_ingresos"] = (
+            df["tendencia_ingresos"]
+            .where(
+                df["tendencia_ingresos"].isin(valores_validos),
+                other=float("nan")
+            )
+            .astype(object)
+        )
+        
+    
+        for col in df.select_dtypes(
+        include=["object", "string"]
+        ).columns:
+
+         df[col] = df[col].astype(object)
+
+         df[col] = df[col].where(
+            pd.notna(df[col]),
+            np.nan
+        )
+
+    return df
+        
 
     return df
 
@@ -81,9 +107,9 @@ def build_preprocessor(X):
             "salario_cliente",
             "total_otros_prestamos",
             "cuota_pactada",
-            "puntaje",
             "puntaje_datacredito",
             "cant_creditosvigentes",
+            "huella_consulta",
             "saldo_mora",
             "saldo_total",
             "saldo_principal",
@@ -102,8 +128,7 @@ def build_preprocessor(X):
     categorical_features = [
         col for col in [
             "tipo_credito",
-            "tipo_laboral",
-            "huella_consulta"
+            "tipo_laboral"
         ]
         if col in X.columns
     ]
@@ -170,10 +195,19 @@ def prepare_train_test(df, target="Pago_atiempo"):
 
     df = prepare_data(df)
 
-    df = df.dropna(subset=[target])
+    if target not in df.columns:
+        raise ValueError(
+            f"No se encontró la variable objetivo: {target}"
+        )
 
-    X = df.drop(columns=[target])
-    y = df[target]
+    df = df.dropna(subset=[target]).copy()
+
+    X = df.drop(columns=[target]).copy()
+    y = df[target].copy()
+
+    # Excluir puntaje por posible data leakage
+    if "puntaje" in X.columns:
+        X = X.drop(columns=["puntaje"])
 
     X_train, X_test, y_train, y_test = train_test_split(
         X,
@@ -185,4 +219,10 @@ def prepare_train_test(df, target="Pago_atiempo"):
 
     preprocessor = build_preprocessor(X_train)
 
-    return X_train, X_test, y_train, y_test, preprocessor
+    return (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        preprocessor
+    )
